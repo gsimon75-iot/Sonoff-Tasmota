@@ -490,6 +490,10 @@
     #define D_JSON_MOTOR_MIS "setMIS"
   #endif
 
+// Commands xdrv_23_stepper.ino
+#define D_CMND_CALIBRATE "Calibrate"
+#define D_CMND_STEP "Step"
+
 /********************************************************************************************/
 
 // Log message prefix

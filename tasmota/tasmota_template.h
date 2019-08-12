@@ -214,6 +214,13 @@ enum UserSelectablePins {
   GPIO_TASMOTASLAVE_RST_INV, // Slave Reset Inverted
   GPIO_HPMA_RX,        // Honeywell HPMA115S0 Serial interface
   GPIO_HPMA_TX,        // Honeywell HPMA115S0 Serial interface
+  GPIO_STEPPER_A_ENA,  // Stepper motor A winding Enable
+  GPIO_STEPPER_A_POS,  // Stepper motor A winding Positive
+  GPIO_STEPPER_A_NEG,  // Stepper motor A winding Negative
+  GPIO_STEPPER_B_ENA,  // Stepper motor B winding Enable
+  GPIO_STEPPER_B_POS,  // Stepper motor B winding Positive
+  GPIO_STEPPER_B_NEG,  // Stepper motor B winding Negative
+  GPIO_STEPPER_OVLD,   // Stepper motor overload sense (low=overload)
   GPIO_SENSOR_END };
 
 // Programmer selectable GPIO functionality
@@ -294,6 +301,13 @@ const char kSensorNames[] PROGMEM =
   D_SENSOR_DEEPSLEEP "|" D_SENSOR_EXS_ENABLE "|"
   D_SENSOR_SLAVE_TX "|" D_SENSOR_SLAVE_RX "|" D_SENSOR_SLAVE_RESET "|" D_SENSOR_SLAVE_RESET "i|"
   D_SENSOR_HPMA_RX "|" D_SENSOR_HPMA_TX "|"
+  D_SENSOR_STEPPER_A_ENA "|"
+  D_SENSOR_STEPPER_A_POS "|"
+  D_SENSOR_STEPPER_A_NEG "|"
+  D_SENSOR_STEPPER_B_ENA "|"
+  D_SENSOR_STEPPER_B_POS "|"
+  D_SENSOR_STEPPER_B_NEG "|"
+  D_SENSOR_STEPPER_OVLD  "|"
   ;
 
 const char kSensorNamesFixed[] PROGMEM =
@@ -744,6 +758,7 @@ const uint8_t kGpioNiceList[] PROGMEM = {
   GPIO_HRE_CLOCK,
   GPIO_HRE_DATA,
 #endif
+<<<<<<< HEAD:tasmota/tasmota_template.h
 #ifdef USE_A4988_STEPPER
   GPIO_A4988_DIR,     // A4988 direction pin
   GPIO_A4988_STP,     // A4988 step pin
@@ -754,7 +769,16 @@ const uint8_t kGpioNiceList[] PROGMEM = {
   GPIO_A4988_MS3,     // A4988 microstep pin3
 #endif
 #ifdef USE_DEEPSLEEP
-  GPIO_DEEPSLEEP
+  GPIO_DEEPSLEEP,
+#endif
+#ifdef USE_STEPPER
+  GPIO_STEPPER_A_ENA,  // Stepper motor A winding Enable
+  GPIO_STEPPER_A_POS,  // Stepper motor A winding Positive
+  GPIO_STEPPER_A_NEG,  // Stepper motor A winding Negative
+  GPIO_STEPPER_B_ENA,  // Stepper motor B winding Enable
+  GPIO_STEPPER_B_POS,  // Stepper motor B winding Positive
+  GPIO_STEPPER_B_NEG,  // Stepper motor B winding Negative
+  GPIO_STEPPER_OVLD,   // Stepper motor overload sense (low=overload)
 #endif
 };
 

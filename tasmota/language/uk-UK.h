@@ -628,6 +628,13 @@
 #define D_SENSOR_SLAVE_TX    "Slave TX"
 #define D_SENSOR_SLAVE_RX    "Slave RX"
 #define D_SENSOR_SLAVE_RESET "Slave RST"
+#define D_SENSOR_STEPPER_A_ENA "Stepper A Ena"
+#define D_SENSOR_STEPPER_A_POS "Stepper A+"
+#define D_SENSOR_STEPPER_A_NEG "Stepper A-"
+#define D_SENSOR_STEPPER_B_ENA "Stepper B Ena"
+#define D_SENSOR_STEPPER_B_POS "Stepper B+"
+#define D_SENSOR_STEPPER_B_NEG "Stepper B-"
+#define D_SENSOR_STEPPER_OVLD  "Stepper overload"
 
 // Units
 #define D_UNIT_AMPERE "А"
