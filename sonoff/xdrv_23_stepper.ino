@@ -105,8 +105,8 @@ stepper_state_t const full_step[] PROGMEM = {
 
     ENA = ENB = 1 always
 
-         ______________
-     A _|              |____.____.____.____.____._
+         ______________                          _
+     A _|              |____.____.____.____.____|
                    ______________
      B _.____.____|              |____.____.____._
                              ______________
@@ -301,8 +301,14 @@ void StepperCmndSpeed(void)
           max_phase = 8;
           break;
         case 3:
-          current_scheme = half_step_inhibit;
-          max_phase = 8;
+          if (have_enable_pins) {
+            current_scheme = half_step_inhibit;
+            max_phase = 8;
+          }
+          else {
+            ResponseCmndChar(D_ERROR);
+            return;
+          }
           break;
         default:
         ResponseCmndChar(D_ERROR);
@@ -404,7 +410,10 @@ void StepperInit(void)
 
   stepper_ovld_pin = pin[GPIO_STEPPER_OVLD];
 
-  enabled = (stepper_A_pos_pin < 99) && (stepper_A_neg_pin < 99) && (stepper_B_ena_pin < 99) && (stepper_B_neg_pin < 99);
+  AddLog_P2(LOG_LEVEL_DEBUG, PSTR("StepperInit; A+:%d A-:%d, B+:%d, B-:%d, Aen:%d, Ben:%d"), 
+      stepper_A_pos_pin, stepper_A_neg_pin, stepper_B_pos_pin, stepper_B_neg_pin, stepper_A_ena_pin, stepper_B_ena_pin);
+
+  enabled = (stepper_A_pos_pin < 99) && (stepper_A_neg_pin < 99) && (stepper_B_pos_pin < 99) && (stepper_B_neg_pin < 99);
   have_enable_pins = enabled && (stepper_A_ena_pin < 99) && (stepper_B_ena_pin < 99);
   AddLog_P2(LOG_LEVEL_DEBUG, PSTR("StepperInit; enabled=%d, have_enable_pins=%d"), enabled, have_enable_pins);
 
