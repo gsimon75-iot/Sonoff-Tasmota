@@ -27,18 +27,15 @@ const char kStepperCommands[] PROGMEM =
 void (* const StepperCommand[])(void) PROGMEM = {
   &StepperCmndCalibrate, &StepperCmndSpeed, &StepperCmndStep };
 
-unsigned long next_tick_time = 0;
-unsigned long tick_ms = 10;
+unsigned long tick_us;
 
-uint8_t stepper_A_ena_pin = 0;
-uint8_t stepper_A_pos_pin = 0;
-uint8_t stepper_A_neg_pin = 0;
+uint8_t stepper_A_ena_pin;
+uint8_t stepper_A_pos_pin;
+uint8_t stepper_A_neg_pin;
 
-uint8_t stepper_B_ena_pin = 0;
-uint8_t stepper_B_pos_pin = 0;
-uint8_t stepper_B_neg_pin = 0;
-
-uint8_t stepper_ovld_pin  = 0;
+uint8_t stepper_B_ena_pin;
+uint8_t stepper_B_pos_pin;
+uint8_t stepper_B_neg_pin;
 
 bool enabled = false;
 bool have_enable_pins = false;
@@ -212,36 +209,6 @@ static const void StepperSet(const stepper_state_t &st_P) {
 }
 
 
-void StepperTick(void) {
-  if (wanted_pos < current_pos) {
-    --current_phase;
-    if (current_phase < 0) {
-      current_phase = max_phase - 1;
-    }
-    --current_pos;
-    StepperSet(current_scheme[current_phase]);
-  }
-  else if (wanted_pos > current_pos) {
-    ++current_phase;
-    if (current_phase >= max_phase) {
-      current_phase = 0;
-    }
-    ++current_pos;
-    StepperSet(current_scheme[current_phase]);
-  }
-  else {
-    if (lock_when_done) {
-      StepperSet(current_scheme[current_phase]);
-    }
-    else
-    {
-      StepperSet(all_off);
-    }
-    idle = true;
-  }
-}
-
-
 void StepperCmndCalibrate(void)
 {
   AddLog_P2(LOG_LEVEL_DEBUG, PSTR("StepperCmndCalibrate;"));
@@ -255,19 +222,22 @@ void StepperCmndCalibrate(void)
 
 void StepperCmndSpeed(void)
 {
-  // arguments: tick_ms, scheme code
+  // arguments: tick_us, scheme code
   char *buffer = XdrvMailbox.data;
   uint32_t buffer_length = XdrvMailbox.data_len;
   char *p, *str, *tok;
+  int scheme_code = -1;
 
   buffer[buffer_length] = '\0';
   do {
-    // parse @tick_ms
+    // parse @tick_us
     str = strtok_r(buffer, ",", &tok);
+    if (!str)
+      break;
     for (; *str && isspace(*str); ++str)
       ;
     if (*str) {
-      tick_ms = (unsigned long)strtol(str, &p, 0);
+      tick_us = (unsigned long)strtol(str, &p, 0);
       if (p == str) {
         ResponseCmndChar(D_ERROR);
         return;
@@ -281,7 +251,7 @@ void StepperCmndSpeed(void)
     for (; *str && isspace(*str); ++str)
       ;
     if (*str) {
-      int scheme_code = (int)strtol(str, &p, 0);
+      scheme_code = (int)strtol(str, &p, 0);
       if (p == str) {
         ResponseCmndChar(D_ERROR);
         return;
@@ -306,8 +276,8 @@ void StepperCmndSpeed(void)
             max_phase = 8;
           }
           else {
-            ResponseCmndChar(D_ERROR);
-            return;
+            current_scheme = half_step;
+            max_phase = 8;
           }
           break;
         default:
@@ -317,18 +287,19 @@ void StepperCmndSpeed(void)
       current_phase = 0;
     }
   } while (0);
+  AddLog_P2(LOG_LEVEL_DEBUG, PSTR("StepperCmndSpeed; tick_us=%d, scheme=%d"), tick_us, scheme_code);
   ResponseCmndDone();
 }
 
 void StepperCmndStep(void)
 {
-  // arguments: req_pos, is_relative, lock_when_done
+  // arguments: req_pos, is_absolute, lock_when_done
   char *buffer = XdrvMailbox.data;
   uint32_t buffer_length = XdrvMailbox.data_len;
   char *p, *str, *tok;
 
-  // argument defaults (no args: stay there and unlock)
-  bool is_relative = true;
+  // argument defaults (no args: return home and unlock)
+  bool is_absolute = true;
   int32_t req_pos = 0;
 
   lock_when_done = false;
@@ -337,6 +308,8 @@ void StepperCmndStep(void)
   do {
     // parse @req_pos
     str = strtok_r(buffer, ",", &tok);
+    if (!str)
+      break;
     for (; *str && isspace(*str); ++str)
       ;
     if (*str) {
@@ -347,7 +320,7 @@ void StepperCmndStep(void)
       }
     }
 
-    // parse @is_relative
+    // parse @is_absolute
     str = strtok_r(nullptr, ",", &tok);
     if (!str)
       break;
@@ -362,7 +335,7 @@ void StepperCmndStep(void)
         ResponseCmndChar(D_ERROR);
         return;
       }
-      is_relative = (i != 0);
+      is_absolute = (i != 0);
     }
 
     // parse @lock_when_done
@@ -385,18 +358,54 @@ void StepperCmndStep(void)
   } while (0);
 
   // process the arguments
-  if (is_relative) {
-    wanted_pos = current_pos + req_pos;
-  }
-  else {
-    wanted_pos = req_pos;
-  }
-  AddLog_P2(LOG_LEVEL_DEBUG, PSTR("StepperCmndStep; is_relative=%d, req_pos=%d, lock_when_done=%d"), is_relative, req_pos, lock_when_done);
+  wanted_pos = is_absolute ? req_pos : current_pos + req_pos;
+  AddLog_P2(LOG_LEVEL_DEBUG, PSTR("StepperCmndStep; is_absolute=%d, req_pos=%d, lock_when_done=%d"), is_absolute, req_pos, lock_when_done);
 
-  idle = false;
+  TEIE &= ~TEIE1;
+  if (idle) {
+    idle = false;
+    T1L = 1;
+  }
+  TEIE |= TEIE1;
+
   ResponseCmndDone();
 }
 
+// ~/.platformio/packages/framework-arduinoespressif8266/cores/esp8266/esp8266_peri.h
+// core_esp8266_wiring_pwm.c
+
+void ICACHE_RAM_ATTR stepper_timer_isr(void)
+{
+  TEIE &= ~TEIE1;
+  T1I = 0;
+
+  if (wanted_pos < current_pos) {
+    --current_phase;
+    if (current_phase < 0) {
+      current_phase = max_phase - 1;
+    }
+    --current_pos;
+    StepperSet(current_scheme[current_phase]);
+  }
+  else if (wanted_pos > current_pos) {
+    ++current_phase;
+    if (current_phase >= max_phase) {
+      current_phase = 0;
+    }
+    ++current_pos;
+    StepperSet(current_scheme[current_phase]);
+  }
+  else {
+    // needed for the case when we won't move it, just change the lockedness
+    StepperSet(lock_when_done ? current_scheme[current_phase] : all_off);
+    idle = true;
+  }
+
+  if (!idle) {
+    T1L = (ESP8266_CLOCK / 1000000) * tick_us;
+    TEIE |= TEIE1;
+  }
+}
 
 void StepperInit(void)
 {
@@ -408,14 +417,8 @@ void StepperInit(void)
   stepper_B_pos_pin = pin[GPIO_STEPPER_B_POS];
   stepper_B_neg_pin = pin[GPIO_STEPPER_B_NEG];
 
-  stepper_ovld_pin = pin[GPIO_STEPPER_OVLD];
-
-  AddLog_P2(LOG_LEVEL_DEBUG, PSTR("StepperInit; A+:%d A-:%d, B+:%d, B-:%d, Aen:%d, Ben:%d"), 
-      stepper_A_pos_pin, stepper_A_neg_pin, stepper_B_pos_pin, stepper_B_neg_pin, stepper_A_ena_pin, stepper_B_ena_pin);
-
   enabled = (stepper_A_pos_pin < 99) && (stepper_A_neg_pin < 99) && (stepper_B_pos_pin < 99) && (stepper_B_neg_pin < 99);
   have_enable_pins = enabled && (stepper_A_ena_pin < 99) && (stepper_B_ena_pin < 99);
-  AddLog_P2(LOG_LEVEL_DEBUG, PSTR("StepperInit; enabled=%d, have_enable_pins=%d"), enabled, have_enable_pins);
 
   if (enabled) {
     if (have_enable_pins) {
@@ -432,18 +435,24 @@ void StepperInit(void)
     digitalWrite(stepper_B_pos_pin, 0);
     pinMode(stepper_B_neg_pin, OUTPUT);
     digitalWrite(stepper_B_neg_pin, 0);
+
+    TEIE &= ~TEIE1;
+    timer1_disable();
+    ETS_FRC_TIMER1_INTR_ATTACH(NULL, NULL);
+    ETS_FRC_TIMER1_NMI_INTR_ATTACH(stepper_timer_isr);
+    timer1_enable(TIM_DIV1, TIM_EDGE, TIM_SINGLE);
   }
 
-  tick_ms = 10;
+  tick_us = 2000;
   current_scheme = half_step;
   max_phase = 8;
-
-  // NOTE: if we store the position in Settings
-  current_phase = 0;
-  current_pos = 0;
-  wanted_pos = 0;
   idle = true;
+  wanted_pos = 0;
   lock_when_done = false;
+  current_phase = 0;
+
+  // NOTE: we might store the position in Settings
+  current_pos = 0;
 }
 
 
@@ -454,25 +463,17 @@ void StepperInit(void)
 bool Xdrv23(uint8_t function)
 {
   bool result = false;
-  if (function == FUNC_INIT) {
-    AddLog_P2(LOG_LEVEL_DEBUG, PSTR("StepperMain; function='FUNC_INIT'"));
-    // this sets @enabled, so it must be handled before checking that  
-    StepperInit();
-  }
-  else if (enabled) {
-    // from now we don't ever need to check @enabled
-    switch (function) {
-      case FUNC_COMMAND:
-        AddLog_P2(LOG_LEVEL_DEBUG, PSTR("StepperMain; function='FUNC_COMMAND'"));
+  switch (function) {
+    case FUNC_INIT:
+      AddLog_P2(LOG_LEVEL_DEBUG, PSTR("StepperMain; function='FUNC_INIT'"));
+      StepperInit();
+      break;
+    case FUNC_COMMAND:
+      AddLog_P2(LOG_LEVEL_DEBUG, PSTR("StepperMain; function='FUNC_COMMAND'"));
+      if (enabled) {
         result = DecodeCommand(kStepperCommands, StepperCommand);
-        break;
-      case FUNC_LOOP:
-        if (!idle && TimeReached(next_tick_time)) {
-          SetNextTimeInterval(next_tick_time, tick_ms);
-          StepperTick();
-        }
-        break;
-    }
+      }
+      break;
   }
   return result;
 }
