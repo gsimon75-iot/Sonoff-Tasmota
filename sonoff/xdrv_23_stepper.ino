@@ -27,8 +27,19 @@ const char kStepperCommands[] PROGMEM =
 void (* const StepperCommand[])(void) PROGMEM = {
   &StepperCmndCalibrate, &StepperCmndSpeed, &StepperCmndStep };
 
-unsigned long tick_us;
+/* NOTE:
+  Precise output timing cannot be done using FUNC_LOOP, because the framework
+  will block when it handles wifi traffic, therefore we reuse Timer1 for this
+  purpose.
 
+  Timer1 is normally driving the PWMs, so this motor control and the PWMs are
+  *mutually exclusive*.
+
+  On the other hand, we can then reuse the PWM-related settings as well, so
+  no new setting allocation is needed.
+*/
+
+// pin mapping
 uint8_t stepper_A_ena_pin;
 uint8_t stepper_A_pos_pin;
 uint8_t stepper_A_neg_pin;
@@ -36,9 +47,6 @@ uint8_t stepper_A_neg_pin;
 uint8_t stepper_B_ena_pin;
 uint8_t stepper_B_pos_pin;
 uint8_t stepper_B_neg_pin;
-
-bool enabled = false;
-bool have_enable_pins = false;
 
 struct stepper_state_t {
   uint8_t A_pos:1;
@@ -52,10 +60,10 @@ struct stepper_state_t {
 // Off-state: every control as disabled as it can be
 stepper_state_t const all_off = {0,0,0,0, 0,0};
 
-// Stepper control schemes: http://users.ece.utexas.edu/~valvano/Datasheets/Stepper_ST.pdf
+// Stepper control control_schemes
+// See http://users.ece.utexas.edu/~valvano/Datasheets/Stepper_ST.pdf
 
 /* Rotating wave: 
-
     ENA = ENB = 1 always
          ____                _
      A _|    |____.____.____| 
@@ -77,7 +85,6 @@ stepper_state_t const rotating_wave[] PROGMEM = {
 
 
 /* Full step:
-
     ENA = ENB = 1 always, #A = not A, #B = not B
          _________           _
      A _|         |____.____| 
@@ -99,9 +106,7 @@ stepper_state_t const full_step[] PROGMEM = {
 
 
 /* Half step always-on:
-
     ENA = ENB = 1 always
-
          ______________                          _
      A _|              |____.____.____.____.____|
                    ______________
@@ -126,7 +131,6 @@ stepper_state_t const half_step[] PROGMEM = {
 
 
 /* Half step with inhibition
-
     #A = not A, #B = not B, NOTE: different order of signals!
          ____.____.____.____                     _
      A _|                  \|____.____.____.___/|
@@ -144,7 +148,6 @@ stepper_state_t const half_step[] PROGMEM = {
 
         |<-0-|--1-|--2-|--3-|--4-|--5-|--6-|--7>|
 */
-
 stepper_state_t const half_step_inhibit[] PROGMEM = {
   {1,0,0,1, 1,1}, // phase 0
   {1,0,0,1, 1,0}, // phase 1
@@ -156,32 +159,74 @@ stepper_state_t const half_step_inhibit[] PROGMEM = {
   {0,0,1,1, 0,1}  // phase 7
 };
 
-stepper_state_t const *current_scheme;
-int8_t current_phase, max_phase;
-int32_t current_pos, wanted_pos;
+struct stepper_control_scheme_t {
+  stepper_state_t const *phases;
+  uint8_t max_phase;
+};
+
+stepper_control_scheme_t control_schemes[] PROGMEM = {
+  { rotating_wave, sizeof(rotating_wave) / sizeof(stepper_state_t) },
+  { full_step, sizeof(full_step) / sizeof(stepper_state_t) },
+  { half_step, sizeof(half_step) / sizeof(stepper_state_t) },
+  { half_step_inhibit, sizeof(half_step_inhibit) / sizeof(stepper_state_t) }
+};
+#define SCHEMES_MAX (sizeof(control_schemes) / sizeof(stepper_control_scheme_t))
+
+// transient state variables
+bool enabled = false;
+bool have_enable_pins;
 bool idle;
+int8_t current_phase;
+int16_t wanted_pos;
 bool lock_when_done;
 
-/*
-  NOTE:
+// settings + persistent state variables
+uint16_t tick_us;
+uint8_t current_scheme_index;
+stepper_control_scheme_t current_scheme;
+int16_t current_pos;
+
+
+void SaveCurrentPos() {
+  Settings.pwm_value[0] = (uint8_t)( current_pos       & 0xff);
+  Settings.pwm_value[1] = (uint8_t)((current_pos >> 8) & 0xff);
+}
+
+
+bool SelectScheme(int n) {
+  if ((n < 0) || (n >= SCHEMES_MAX)) {
+    return false;
+  }
+  if (n == current_scheme_index) {
+    return true;
+  }
+  current_scheme_index = n;
+  wanted_pos = current_pos; // stop moving
+  current_phase = 0;
+  memcpy_P(&current_scheme, &control_schemes[n], sizeof(stepper_control_scheme_t));
+  Settings.pwm_value[5] = current_scheme_index;
+  return true;
+}
+
+/* NOTE:
   PlatformIO generates declarations for our functions to the beginning of the
   merged giant .cpp source, but that's way sooner than our type definitions
-  here, so if we use a locally defined type in a function argument (and not
-  just as a pointer to it), then it will generate errors.
+  here, so if we use a locally defined type in a function argument, then it
+  will generate errors.
 
   To prevent this, we need to outsmart PlatformIOs function recognition
   pattern, and one way to do it is to make the return type consist of more
   than two words, like 'static const void'.
 
-  It seems that this workaround for the declaration order problems is causing
-  worse issues than what it is intended to solve...
+  It seems that this forced generation of declarations is causing worse issues
+  than what it is intended to solve. And, trying to 'parse' C++ with regexes is
+  not the best idea...
 */
-
 static const void StepperSet(const stepper_state_t &st_P) {
   stepper_state_t st;
-  memcpy_P(&st, &st_P, sizeof(stepper_state_t));
+  memcpy_P(&st, &st_P, sizeof(stepper_state_t)); // that's one byte
 
-  // to reduce the transitional hazards:
+  // reducing the transitional hazards:
   // if an Enable pin falls, set that first; if it rises, set that last
   if (have_enable_pins) {
     if (!st.A_ena) {
@@ -209,16 +254,58 @@ static const void StepperSet(const stepper_state_t &st_P) {
 }
 
 
+void ICACHE_RAM_ATTR stepper_timer_isr(void)
+{
+  // ~/.platformio/packages/framework-arduinoespressif8266/cores/esp8266/esp8266_peri.h
+  TEIE &= ~TEIE1;
+  T1I = 0;
+
+  if (wanted_pos < current_pos) {
+    --current_phase;
+    if (current_phase < 0) {
+      current_phase = current_scheme.max_phase - 1;
+    }
+    --current_pos;
+    StepperSet(current_scheme.phases[current_phase]);
+  }
+  else if (wanted_pos > current_pos) {
+    ++current_phase;
+    if (current_phase >= current_scheme.max_phase) {
+      current_phase = 0;
+    }
+    ++current_pos;
+    StepperSet(current_scheme.phases[current_phase]);
+  }
+  else {
+    // needed for the case when we won't move it, just change the lockedness
+    StepperSet(lock_when_done ? current_scheme.phases[current_phase] : all_off);
+    SaveCurrentPos();
+    idle = true;
+  }
+
+  if (!idle) {
+    T1L = (ESP8266_CLOCK / 1000000) * tick_us;
+    // T1L has 23 bits, the multiplier is 80 (-> 7 bits), so
+    // 23 - 7 = 16 bits are indeed enough for @tick_us
+    TEIE |= TEIE1;
+  }
+}
+
+
 void StepperCmndCalibrate(void)
 {
   AddLog_P2(LOG_LEVEL_DEBUG, PSTR("StepperCmndCalibrate;"));
   // assume the current state as position 0
+  TEIE &= ~TEIE1;
+  T1L = 0;
   current_pos = 0;
   wanted_pos = 0;
   idle = true;
   StepperSet(all_off);
+  SaveCurrentPos();
   ResponseCmndDone();
 }
+
 
 void StepperCmndSpeed(void)
 {
@@ -226,6 +313,7 @@ void StepperCmndSpeed(void)
   char *buffer = XdrvMailbox.data;
   uint32_t buffer_length = XdrvMailbox.data_len;
   char *p, *str, *tok;
+  uint16_t req_tick_us;
   int scheme_code = -1;
 
   buffer[buffer_length] = '\0';
@@ -237,10 +325,13 @@ void StepperCmndSpeed(void)
     for (; *str && isspace(*str); ++str)
       ;
     if (*str) {
-      tick_us = (unsigned long)strtol(str, &p, 0);
+      req_tick_us = (uint16_t)strtol(str, &p, 0);
       if (p == str) {
         ResponseCmndChar(D_ERROR);
         return;
+      }
+      if (req_tick_us != tick_us) {
+        Settings.pwm_frequency = tick_us = req_tick_us;
       }
     }
 
@@ -256,38 +347,13 @@ void StepperCmndSpeed(void)
         ResponseCmndChar(D_ERROR);
         return;
       }
-
-      switch (scheme_code) {
-        case 0:
-          current_scheme = rotating_wave;
-          max_phase = 4;
-          break;
-        case 1:
-          current_scheme = full_step;
-          max_phase = 4;
-          break;
-        case 2:
-          current_scheme = half_step;
-          max_phase = 8;
-          break;
-        case 3:
-          if (have_enable_pins) {
-            current_scheme = half_step_inhibit;
-            max_phase = 8;
-          }
-          else {
-            current_scheme = half_step;
-            max_phase = 8;
-          }
-          break;
-        default:
+      if (!SelectScheme(scheme_code)) {
         ResponseCmndChar(D_ERROR);
         return;
       }
-      current_phase = 0;
     }
   } while (0);
-  AddLog_P2(LOG_LEVEL_DEBUG, PSTR("StepperCmndSpeed; tick_us=%d, scheme=%d"), tick_us, scheme_code);
+  AddLog_P2(LOG_LEVEL_DEBUG, PSTR("StepperCmndSpeed; tick_us=%d, scheme=%d"), req_tick_us, scheme_code);
   ResponseCmndDone();
 }
 
@@ -300,7 +366,7 @@ void StepperCmndStep(void)
 
   // argument defaults (no args: return home and unlock)
   bool is_absolute = true;
-  int32_t req_pos = 0;
+  int16_t req_pos = 0;
 
   lock_when_done = false;
 
@@ -313,7 +379,7 @@ void StepperCmndStep(void)
     for (; *str && isspace(*str); ++str)
       ;
     if (*str) {
-      req_pos = (int32_t)strtol(str, &p, 0);
+      req_pos = (int16_t)strtol(str, &p, 0);
       if (p == str) {
         ResponseCmndChar(D_ERROR);
         return;
@@ -371,41 +437,6 @@ void StepperCmndStep(void)
   ResponseCmndDone();
 }
 
-// ~/.platformio/packages/framework-arduinoespressif8266/cores/esp8266/esp8266_peri.h
-// core_esp8266_wiring_pwm.c
-
-void ICACHE_RAM_ATTR stepper_timer_isr(void)
-{
-  TEIE &= ~TEIE1;
-  T1I = 0;
-
-  if (wanted_pos < current_pos) {
-    --current_phase;
-    if (current_phase < 0) {
-      current_phase = max_phase - 1;
-    }
-    --current_pos;
-    StepperSet(current_scheme[current_phase]);
-  }
-  else if (wanted_pos > current_pos) {
-    ++current_phase;
-    if (current_phase >= max_phase) {
-      current_phase = 0;
-    }
-    ++current_pos;
-    StepperSet(current_scheme[current_phase]);
-  }
-  else {
-    // needed for the case when we won't move it, just change the lockedness
-    StepperSet(lock_when_done ? current_scheme[current_phase] : all_off);
-    idle = true;
-  }
-
-  if (!idle) {
-    T1L = (ESP8266_CLOCK / 1000000) * tick_us;
-    TEIE |= TEIE1;
-  }
-}
 
 void StepperInit(void)
 {
@@ -443,16 +474,17 @@ void StepperInit(void)
     timer1_enable(TIM_DIV1, TIM_EDGE, TIM_SINGLE);
   }
 
-  tick_us = 2000;
-  current_scheme = half_step;
-  max_phase = 8;
   idle = true;
   wanted_pos = 0;
   lock_when_done = false;
-  current_phase = 0;
 
-  // NOTE: we might store the position in Settings
-  current_pos = 0;
+  // reuse Settings.pwm_frequency for @tick_us
+  tick_us = Settings.pwm_frequency;
+  // reuse Settings.pwm_value[0..1] for current_pos
+  current_pos = (int16_t)(Settings.pwm_value[0] + (((uint16_t)Settings.pwm_value[1]) << 8));
+  // reuse Settings.pwm_value[5] for control scheme index
+  SelectScheme(Settings.pwm_value[5]);
+  // still free pwm-related: pwm_value[2..4], pwm_range
 }
 
 
