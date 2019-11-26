@@ -758,7 +758,6 @@ const uint8_t kGpioNiceList[] PROGMEM = {
   GPIO_HRE_CLOCK,
   GPIO_HRE_DATA,
 #endif
-<<<<<<< HEAD:tasmota/tasmota_template.h
 #ifdef USE_A4988_STEPPER
   GPIO_A4988_DIR,     // A4988 direction pin
   GPIO_A4988_STP,     // A4988 step pin

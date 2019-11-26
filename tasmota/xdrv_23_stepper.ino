@@ -164,7 +164,7 @@ struct stepper_control_scheme_t {
   uint8_t max_phase;
 };
 
-stepper_control_scheme_t control_schemes[] PROGMEM = {
+stepper_control_scheme_t const control_schemes[] PROGMEM = {
   { rotating_wave, sizeof(rotating_wave) / sizeof(stepper_state_t) },
   { full_step, sizeof(full_step) / sizeof(stepper_state_t) },
   { half_step, sizeof(half_step) / sizeof(stepper_state_t) },
@@ -192,21 +192,6 @@ void SaveCurrentPos() {
   Settings.pwm_value[1] = (uint8_t)((current_pos >> 8) & 0xff);
 }
 
-
-bool SelectScheme(int n) {
-  if ((n < 0) || (n >= SCHEMES_MAX)) {
-    return false;
-  }
-  if (n == current_scheme_index) {
-    return true;
-  }
-  current_scheme_index = n;
-  wanted_pos = current_pos; // stop moving
-  current_phase = 0;
-  memcpy_P(&current_scheme, &control_schemes[n], sizeof(stepper_control_scheme_t));
-  Settings.pwm_value[5] = current_scheme_index;
-  return true;
-}
 
 /* NOTE:
   PlatformIO generates declarations for our functions to the beginning of the
@@ -289,6 +274,27 @@ void ICACHE_RAM_ATTR stepper_timer_isr(void)
     // 23 - 7 = 16 bits are indeed enough for @tick_us
     TEIE |= TEIE1;
   }
+}
+
+
+bool SelectScheme(int n) {
+  if ((n < 0) || (n >= SCHEMES_MAX)) {
+    return false;
+  }
+  if (n == current_scheme_index) {
+    return true;
+  }
+
+  TEIE &= ~TEIE1;
+  current_scheme_index = n;
+  wanted_pos = current_pos; // stop moving
+  current_phase = 0;
+  memcpy_P(&current_scheme, &control_schemes[n], sizeof(stepper_control_scheme_t));
+  Settings.pwm_value[5] = current_scheme_index;
+  if (!idle) {
+    TEIE |= ~TEIE1;
+  }
+  return true;
 }
 
 
@@ -424,10 +430,10 @@ void StepperCmndStep(void)
   } while (0);
 
   // process the arguments
-  wanted_pos = is_absolute ? req_pos : current_pos + req_pos;
   AddLog_P2(LOG_LEVEL_DEBUG, PSTR("StepperCmndStep; is_absolute=%d, req_pos=%d, lock_when_done=%d"), is_absolute, req_pos, lock_when_done);
 
   TEIE &= ~TEIE1;
+  wanted_pos = is_absolute ? req_pos : current_pos + req_pos;
   if (idle) {
     idle = false;
     T1L = 1;
@@ -483,7 +489,9 @@ void StepperInit(void)
   // reuse Settings.pwm_value[0..1] for current_pos
   current_pos = (int16_t)(Settings.pwm_value[0] + (((uint16_t)Settings.pwm_value[1]) << 8));
   // reuse Settings.pwm_value[5] for control scheme index
-  SelectScheme(Settings.pwm_value[5]);
+  if (!SelectScheme(Settings.pwm_value[5])) {
+    SelectScheme(1);
+  }
   // still free pwm-related: pwm_value[2..4], pwm_range
 }
 
@@ -492,6 +500,14 @@ void StepperInit(void)
  * Interface
 \*********************************************************************************************/
 
+/*
+const char HTTP_MSG_SLIDER1[] PROGMEM =
+  "<div><span class='p'>" D_COLDLIGHT "</span><span class='q'>" D_WARMLIGHT "</span></div>"
+  "<div><input type='range' min='153' max='500' value='%d' onchange='lc(value)'></div>";
+const char HTTP_MSG_SLIDER2[] PROGMEM =
+  "<div><span class='p'>" D_DARKLIGHT "</span><span class='q'>" D_BRIGHTLIGHT "</span></div>"
+  "<div><input type='range' min='1' max='100' value='%d' onchange='lb(value)'></div>";
+*/
 bool Xdrv23(uint8_t function)
 {
   bool result = false;
@@ -499,6 +515,20 @@ bool Xdrv23(uint8_t function)
     case FUNC_INIT:
       AddLog_P2(LOG_LEVEL_DEBUG, PSTR("StepperMain; function='FUNC_INIT'"));
       StepperInit();
+      break;
+    case FUNC_WEB_ADD_MAIN_BUTTON:
+      //WSContentSpaceButton(BUTTON_FIRMWARE_UPGRADE); // button with space above
+      //WSContentButton(BUTTON_INFORMATION); // plain button
+      //WSContentSend_P(PSTR("<tr>"));
+      //WSContentSend_P(HTTP_MSG_SLIDER1, LightGetColorTemp());
+      //WSContentSend_P(HTTP_MSG_SLIDER2, Settings.light_dimmer);
+      WSContentSend_P(PSTR("<div></div>"));            // 5px padding
+      WSContentSend_P(PSTR("<p><form action=\"javascript:la('%s')\" method='get'><button>%s</button></form></p>"),
+          "/cm?cmnd=step%2032767", "Up");
+      WSContentSend_P(PSTR("<p><form action=\"javascript:la('%s')\" method='get'><button>%s</button></form></p>"),
+          "/cm?cmnd=step%200,1", "Stop");
+      WSContentSend_P(PSTR("<p><form action=\"javascript:la('%s')\" method='get'><button>%s</button></form></p>"),
+          "/cm?cmnd=step%20-32768", "Down");
       break;
     case FUNC_COMMAND:
       AddLog_P2(LOG_LEVEL_DEBUG, PSTR("StepperMain; function='FUNC_COMMAND'"));
